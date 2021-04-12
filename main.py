@@ -20,6 +20,20 @@ import re
 import json
 import time
 from bs4 import BeautifulSoup
+import logging
+import concurrent.futures as cf
+import math
+from datetime import datetime
+
+logfile = 'main-' + datetime.now().strftime('%Y-%m-%d-%H:%M:%S') + '.log'
+
+logging.basicConfig(
+    filename=logfile, 
+    format='%(asctime)s %(levelname)-8s %(message)s',
+    level=logging.INFO,
+    datefmt='%Y-%m-%d %H:%M:%S')
+
+failed_urls = []
 
 '''
 Soupify.
@@ -32,9 +46,23 @@ def get_soup(page):
 Get raw HTML.
 '''
 def get_html(url):
-    page = requests.get(url)
-    text = page.text
-    return text
+    try:
+        page = requests.get(url)
+        text = page.text
+        return text
+    except Exception:
+        logging.exception(f'Failure on {url}')
+        logging.error(f'Failure on {url}')
+        failed_urls.append(url)
+        return
+
+def handle_failures(failures):
+    #This is where we change what we want to do with URL requests that fail.
+    if len(failures) > 0:
+        logging.info('Failed requests added to failed_urls.json')
+        with open('failed_urls.json', 'w') as f:
+            json.dump(failures, f)
+    return
 
 '''
 Parse links from soup.
@@ -51,10 +79,12 @@ def get_soup_links(soup):
 Scrape CNN US sitemap for given year, month. Returns list of all article urls.
 '''
 def crawl_links_month(year:int, month:int):
+    failed_urls = []
     url_str = r'https://us.cnn.com/article/sitemap-{}-{}.html'.format(year,month)
     page = get_html(url_str)
     soup = get_soup(page)
     all_links = get_soup_links(soup)
+    handle_failures(failed_urls)
     return all_links
 
 '''
@@ -62,6 +92,7 @@ Scrape CNN US sitemap for given full year. Returns list of all article urls. Thi
 '''
 def crawl_links_year(year:int):
     all_links = []
+    failed_urls = []
     for i in tqdm(range(1,13)):
         try:
             url_str = r'https://us.cnn.com/article/sitemap-{}-{}.html'.format(year,i)
@@ -72,6 +103,7 @@ def crawl_links_year(year:int):
         except Exception as e:
             print(e)
             continue
+    handle_failures(failed_urls)
     return all_links
 
 
@@ -82,7 +114,7 @@ def parse_article(soup):
     re_paragraph = re.compile(r'body__paragraph')
     paras = []
     #CNN, annoyingly, puts the first paragraph of the article in a p tag,
-    #and each subsquent paragraph in a div tag.
+    #and each subsequent paragraph in a div tag.
     for para in soup.find_all('p', class_=re_paragraph):
         if not para == '':
             paras.append(para.text)
@@ -92,14 +124,14 @@ def parse_article(soup):
     text = ''.join(paras)
     try:
         modified = soup.find('meta', itemprop='dateModified')['content']
-    except:
+    except TypeError:
         modified = None
     try:
         headline = soup.find('meta', itemprop='alternativeHeadline')['content']
-    except:
+    except TypeError:
         try:
             headline = soup.find('meta', itemprop='headline')['content']
-        except:
+        except TypeError:
             headline = None
     article = {
       'headline': headline,
@@ -110,15 +142,57 @@ def parse_article(soup):
     return article
 
 '''
+Worker for ThreadPoolExecutor
+'''
+def thread_worker(url_str):
+    results = {}
+
+    html_tic = time.perf_counter()
+    page = get_html(url_str)
+    html_toc = time.perf_counter()
+
+    soup_tic = time.perf_counter()
+    soup = get_soup(page)
+    soup_toc = time.perf_counter()
+
+    parse_tic = time.perf_counter()
+    article = parse_article(soup)
+    parse_toc = time.perf_counter()
+
+    if article['text'] != '':
+        results['article_text'] = parse_article(soup)
+    else:
+        logging.warning(f'Url {url_str} produced empty article.')
+    
+    results['html_time'] = (html_toc - html_tic)
+    results['soup_time'] = (soup_toc - soup_tic)
+    results['parse_time'] = (parse_toc - parse_tic)
+
+    return results
+
+'''
 Parse many articles, given a list of urls.
 '''
 def parse_many(url_list):
     parsed_list = []
-
     html_times = []
     soup_times = []
     parse_times = []
+    failed_urls = []
 
+    with tqdm(total=len(url_list)) as pbar:
+        with cf.ThreadPoolExecutor(max_workers=20) as executor:
+            futures = {executor.submit(thread_worker, arg): arg for arg in url_list}
+            for future in cf.as_completed(futures):
+                results = future.result()
+                if 'article_text' in results.keys():
+                    parsed_list.append(results['article_text'])
+                html_times.append(results['html_time'])
+                soup_times.append(results['soup_time'])
+                parse_times.append(results['parse_time'])
+                pbar.update(1)
+
+    '''
     for url_str in tqdm(url_list):
         try:
             html_tic = time.perf_counter()
@@ -142,7 +216,10 @@ def parse_many(url_list):
         except Exception as e:
             print(e)
             continue
-        
+    '''
+    
+    handle_failures(failed_urls)
+
     return parsed_list, html_times, soup_times, parse_times
 
 '''
@@ -178,15 +255,21 @@ def main():
         parsed_articles, html_times, soup_times, parse_times = parse_many(links)
         print(f'\nParsed {len(parsed_articles)}. Exporting ...')
 
-        print('\nPerformance timing:')
-        print(f'\nget_html()\t\tMin: {min(html_times):.6f}\tMax: {max(html_times):.6f}\tAvg: {sum(html_times)/len(html_times):.6f}')
-        print(f'get_soup()\t\tMin: {min(soup_times):.6f}\tMax: {max(soup_times):.6f}\tAvg: {sum(soup_times)/len(soup_times):.6f}')
-        print(f'parse_article()\t\tMin: {min(parse_times):.6f}\tMax: {max(parse_times):.6f}\tAvg: {sum(parse_times)/len(parse_times):.6f}')
+        performance_timing = [
+            '\nPerformance timing:',
+            f'\nget_html()\t\tMin: {min(html_times):.6f}\tMax: {max(html_times):.6f}\tAvg: {sum(html_times)/len(html_times):.6f}',
+            f'get_soup()\t\tMin: {min(soup_times):.6f}\tMax: {max(soup_times):.6f}\tAvg: {sum(soup_times)/len(soup_times):.6f}',
+            f'parse_article()\t\tMin: {min(parse_times):.6f}\tMax: {max(parse_times):.6f}\tAvg: {sum(parse_times)/len(parse_times):.6f}',
+        ]
+        for line in performance_timing:
+            print(line)
+            logging.info(line)
 
         filename = f'CNN_{year}_{month}.json'
         output_to_json(parsed_articles, filename)
         print(f'\nExported to {filename}. Have a blessed day!')
     except Exception:
+        logging.exception('It all went sideways!')
         print('Ruh roh.')
     
 if __name__ == '__main__':
