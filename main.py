@@ -26,6 +26,8 @@ import math
 from datetime import datetime
 from pprint import pprint as pp
 import sys
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logfile = 'main-' + datetime.now().strftime('%Y-%m-%d-%H:%M:%S') + '.log'
 
@@ -37,6 +39,11 @@ logging.basicConfig(
 
 failed_urls = []
 
+excluded_pages = [
+    re.compile(r'cnn\-underscored'),
+    re.compile(r'fast\-facts')
+]
+
 '''
 Soupify.
 '''
@@ -45,11 +52,36 @@ def get_soup(page):
   return soup
 
 '''
+Requests session for get_html
+'''
+def requests_session(
+    retries = 3,
+    backoff_factor = 0.3,
+    status_forcelist=(500, 502, 504),
+    session=None,
+    ):
+
+    session = session or requests.Session()
+    retry = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
+
+
+'''
 Get raw HTML.
 '''
+
 def get_html(url):
     try:
-        page = requests.get(url)
+        page = requests_session().get(url, timeout=10)
         text = page.text
         return text
     except Exception:
@@ -87,7 +119,15 @@ def crawl_links_month(year:int, month:int):
     soup = get_soup(page)
     all_links = get_soup_links(soup)
     handle_failures(failed_urls)
-    return all_links
+    clean_links = []
+    for url in all_links:
+        valid = True
+        for exclude in excluded_pages:
+            if re.search(exclude, url) != None:
+                valid = False
+        if valid:
+            clean_links.append(url)
+    return clean_links
 
 '''
 Scrape CNN US sitemap for given full year. Returns list of all article urls. This might void your warranty.
@@ -106,7 +146,15 @@ def crawl_links_year(year:int):
             print(e)
             continue
     handle_failures(failed_urls)
-    return all_links
+    clean_links = []
+    for url in all_links:
+        valid = True
+        for exclude in excluded_pages:
+            if re.search(exclude, url) != None:
+                valid = False
+        if valid:
+            clean_links.append(url)
+    return clean_links
 
 '''
 Attempt to retrive a metadata tag about an article page.
@@ -163,10 +211,17 @@ def thread_worker(url_str):
     article = parse_article(soup)
     parse_toc = time.perf_counter()
 
-    if article['text'] != '':
-        results['article_text'] = parse_article(soup)
-    else:
-        logging.warning(f'Url {url_str} produced empty article.')
+    results['headline'] = article['headline']
+    results['modified'] = article['modified']
+
+    if sys.argv[1] != 'keywords':
+        if article['text'] != '':
+            results['article_text'] = article['text']
+        else:
+            logging.warning(f'Url {url_str} produced empty article.')
+
+    if sys.argv[1] != 'text':
+        results['keywords'] = article['keywords']
     
     results['html_time'] = (html_toc - html_tic)
     results['soup_time'] = (soup_toc - soup_tic)
@@ -185,7 +240,7 @@ def parse_many(url_list):
     failed_urls = []
 
     with tqdm(total=len(url_list)) as pbar:
-        with cf.ThreadPoolExecutor(max_workers=20) as executor:
+        with cf.ProcessPoolExecutor(max_workers=20) as executor:
             futures = {executor.submit(thread_worker, arg): arg for arg in url_list}
             for future in cf.as_completed(futures):
                 results = future.result()
