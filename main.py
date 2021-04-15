@@ -25,6 +25,7 @@ import concurrent.futures as cf
 import math
 from datetime import datetime
 from pprint import pprint as pp
+import sys
 
 logfile = 'main-' + datetime.now().strftime('%Y-%m-%d-%H:%M:%S') + '.log'
 
@@ -212,16 +213,29 @@ MAIN
 
 def main():
     try:
+        if len(sys.argv) == 1:
+            sys.argv.append('text')
         print('Welcome to the CNN Scraper 9000!\n')
-        year = int(input('Enter year of interest: '))
-        mode = str(input('Scrape a full year(1), or just one month(2)? '))
+        if len(sys.argv) == 2:
+            year = int(input('Enter year of interest: '))
+        else:
+            year = int(sys.argv[2])
+        if len(sys.argv) < 4:
+            mode = str(input('Scrape a full year(1), or just one month(2)? '))
+        elif sys.argv[3] == 'all':
+            mode = '1'
+        else:
+            mode = '2'
         if mode == '1':  #scrape a year
             print('Scraping ...')
             month = 'all'
             links = crawl_links_year(year)
             print(f'\nFound {len(links)} articles. Parsing ...')
         elif mode == '2':  #scrape a month
-            month = int(input('Enter month of interest as digit: ').replace('0',''))
+            if len(sys.argv) < 4:
+                month = int(input('Enter month of interest as digit: ').replace('0',''))
+            else:
+                month = int(sys.argv[3])
             print('Scraping ...')
             links = crawl_links_month(year, month)
             print(f'\nFound {len(links)} articles. Parsing ...')
@@ -247,6 +261,7 @@ def main():
         print(f'\nExported to {filename}. Have a blessed day!')
     except Exception:
         logging.exception('It all went sideways!')
+        logging.info(sys.argv)
         print('Ruh roh.')
     
 if __name__ == '__main__':
