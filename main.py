@@ -14,19 +14,20 @@ This script scrapes the CNN US Edition sitemap for a given year and month, and e
 ]
 '''
 
-from tqdm import tqdm  #the One True Import of import
-import requests
-import re
-import json
-import time
-from bs4 import BeautifulSoup
-import logging
 import concurrent.futures as cf
+import json
+import logging
 import math
+import re
+import sys
+import time
 from datetime import datetime
 from pprint import pprint as pp
-import sys
+
+import requests
+from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
+from tqdm import tqdm  # the One True Import of import
 from urllib3.util.retry import Retry
 
 logfile = 'main-' + datetime.now().strftime('%Y-%m-%d-%H:%M:%S') + '.log'
@@ -41,7 +42,11 @@ failed_urls = []
 
 excluded_pages = [
     re.compile(r'cnn\-underscored'),
-    re.compile(r'fast\-facts')
+    re.compile(r'fast\-facts'),
+    re.compile(r'five\-things'),
+    re.compile(r'\-trnd'),
+    re.compile(r'what\-matters'),
+    re.compile(r'week\-in\-review')
 ]
 
 '''
@@ -171,6 +176,7 @@ Parse article from soup. Return dict of parsed article deliciousness.
 '''
 def parse_article(soup):
     re_paragraph = re.compile(r'body__paragraph')
+    re_para_alt = re.compile(r'paragraph inline\-placeholder')
     paras = []
     #CNN, annoyingly, puts the first paragraph of the article in a p tag,
     #and each subsequent paragraph in a div tag.
@@ -178,6 +184,9 @@ def parse_article(soup):
         if not para == '':
             paras.append(para.text)
     for para in soup.find_all('div', class_=re_paragraph):
+        if not para == '':
+            paras.append(para.text)
+    for para in soup.find_all('p', class_=re_para_alt):
         if not para == '':
             paras.append(para.text)
     text = ''.join(paras)
@@ -240,7 +249,7 @@ def parse_many(url_list):
     failed_urls = []
 
     with tqdm(total=len(url_list)) as pbar:
-        with cf.ProcessPoolExecutor(max_workers=20) as executor:
+        with cf.ProcessPoolExecutor(max_workers=32) as executor:
             futures = {executor.submit(thread_worker, arg): arg for arg in url_list}
             for future in cf.as_completed(futures):
                 results = future.result()
