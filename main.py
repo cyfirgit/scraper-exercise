@@ -24,6 +24,7 @@ import logging
 import concurrent.futures as cf
 import math
 from datetime import datetime
+from pprint import pprint as pp
 
 logfile = 'main-' + datetime.now().strftime('%Y-%m-%d-%H:%M:%S') + '.log'
 
@@ -106,6 +107,15 @@ def crawl_links_year(year:int):
     handle_failures(failed_urls)
     return all_links
 
+'''
+Attempt to retrive a metadata tag about an article page.
+'''
+def parse_meta(soup, attr, **kwargs):
+    try:
+        result = soup.find('meta', attrs=kwargs)[attr]
+    except:
+        result = None
+    return result
 
 '''
 Parse article from soup. Return dict of parsed article deliciousness.
@@ -122,17 +132,10 @@ def parse_article(soup):
         if not para == '':
             paras.append(para.text)
     text = ''.join(paras)
-    try:
-        modified = soup.find('meta', itemprop='dateModified')['content']
-    except TypeError:
-        modified = None
-    try:
-        headline = soup.find('meta', itemprop='alternativeHeadline')['content']
-    except TypeError:
-        try:
-            headline = soup.find('meta', itemprop='headline')['content']
-        except TypeError:
-            headline = None
+    modified = parse_meta(soup, 'content', **{'itemprop':'dateModified'})
+    headline = parse_meta(soup, 'content', **{'itemprop':'alternativeHeadline'})
+    if headline == None:
+        headline = parse_meta(soup, 'content', **{'itemprop': 'headline'})
     article = {
       'headline': headline,
       'modified': modified,
@@ -191,32 +194,6 @@ def parse_many(url_list):
                 soup_times.append(results['soup_time'])
                 parse_times.append(results['parse_time'])
                 pbar.update(1)
-
-    '''
-    for url_str in tqdm(url_list):
-        try:
-            html_tic = time.perf_counter()
-            page = get_html(url_str)
-            html_toc = time.perf_counter()
-
-            soup_tic = time.perf_counter()
-            soup = get_soup(page)
-            soup_toc = time.perf_counter()
-
-            parse_tic = time.perf_counter()
-            article = parse_article(soup)
-            parse_toc = time.perf_counter()
-
-            if article['text'] != '':
-                parsed_list.append(parse_article(soup))
-            
-            html_times.append(html_toc - html_tic)
-            soup_times.append(soup_toc - soup_tic)
-            parse_times.append(parse_toc - parse_tic)
-        except Exception as e:
-            print(e)
-            continue
-    '''
     
     handle_failures(failed_urls)
 
